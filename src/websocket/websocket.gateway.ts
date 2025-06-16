@@ -11,36 +11,29 @@ import { Server, WebSocket } from 'ws';
 import { Logger } from '@nestjs/common';
 
 @WebSocketGateway({
-  path: '/ws', // Путь, по которому Angular будет подключаться к прокси
+  path: '/ws',
   cors: {
-    origin: 'https://ddeffttopp.github.io', // Ваш Angular-домен на GitHub Pages
+    origin: 'https://ddeffttopp.github.io',
     credentials: true,
   },
 })
 export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer() wss: Server; // Сервер для клиентов (Angular)
+  @WebSocketServer() wss: Server;
   private readonly logger = new Logger(WebsocketGateway.name);
 
-  // Сопоставление клиентских сокетов (от Angular) с сокетами Fintacharts
   private clientToFintachartsSocket = new Map<WebSocket, WebSocket>();
-  // Сопоставление сокетов Fintacharts с клиентскими сокетами (для обратной отправки данных)
   private fintachartsToClientSocket = new Map<WebSocket, WebSocket>();
 
-
-  // Обработка нового соединения от Angular-клиента
   async handleConnection(client: WebSocket, ...args: any[]) {
     this.logger.log(`[Client WS] New client connected. Client IP/Protocol: ${client.protocol || 'N/A'}`);
-    // Можно добавить логирование IP, если это доступно в вашей среде
-    // this.logger.log(`[Client WS] Client remote address: ${client._socket?.remoteAddress}`);
   }
 
-  // Обработка отключения Angular-клиента
   handleDisconnect(client: WebSocket) {
     this.logger.log(`[Client WS] Client disconnected.`);
     const fintachartsSocket = this.clientToFintachartsSocket.get(client);
-    if (fintachartsSocket) { // Проверяем, существует ли связанный сокет Fintacharts
+    if (fintachartsSocket) {
       if (fintachartsSocket.readyState === WebSocket.OPEN) {
-        fintachartsSocket.close(); // Закрываем соединение с Fintacharts
+        fintachartsSocket.close();
         this.logger.log('[Fintacharts WS] Fintacharts WebSocket connection closed due to client disconnect.');
       } else {
         this.logger.warn(`[Fintacharts WS] Fintacharts socket was not OPEN, state: ${fintachartsSocket.readyState}. Cleaning up map.`);
@@ -52,14 +45,13 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
     }
   }
 
-  // Обработка сообщения подписки от Angular-клиента
   @SubscribeMessage('l1-subscription')
   async handleL1Subscription(
     @ConnectedSocket() client: WebSocket,
     @MessageBody() data: any,
   ): Promise<void> {
     this.logger.log(`[Client WS] Received L1 subscription from client.`);
-    this.logger.log(`[Client WS] Subscription Data: ${JSON.stringify(data)}`); // Логируем входящие данные
+    this.logger.log(`[Client WS] Subscription Data: ${JSON.stringify(data)}`);
     const token = data.token;
     const instrumentId = data.instrumentId;
     const provider = data.provider || 'oanda';
@@ -69,15 +61,14 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
       if (client && client.readyState === WebSocket.OPEN) {
         client.send(JSON.stringify({ type: 'error', message: 'Token is required for subscription.' }));
       }
-      // ОБЯЗАТЕЛЬНО закрываем клиентский сокет, если нет токена
       if (client.readyState === WebSocket.OPEN) {
-        client.close(1008, 'Token missing'); // 1008 - Policy Violation
+        client.close(1008, 'Token missing');
         this.logger.log('[Client WS] Client socket closed due to missing token.');
       }
       return;
     }
 
-    this.logger.log(`[Client WS] Instrument ID: ${instrumentId}, Provider: ${provider}, Token received: ${token ? token.substring(0, 10) + '...' : 'N/A'}`); // Лог части токена
+    this.logger.log(`[Client WS] Instrument ID: ${instrumentId}, Provider: ${provider}, Token received: ${token ? token.substring(0, 10) + '...' : 'N/A'}`);
 
     const existingFintachartsSocket = this.clientToFintachartsSocket.get(client);
     if (existingFintachartsSocket) {
@@ -98,7 +89,6 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
     this.clientToFintachartsSocket.set(client, fintachartsSocket);
     this.fintachartsToClientSocket.set(fintachartsSocket, client);
 
-    // Обработчик открытия соединения с Fintacharts
     fintachartsSocket.onopen = () => {
       this.logger.log('[Fintacharts WS] Successfully connected to Fintacharts WebSocket API.');
       const subscribeMessage = {
@@ -113,23 +103,20 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
       this.logger.log(`[Fintacharts WS] Sent subscription message to Fintacharts for: ${instrumentId}`);
     };
 
-    // Обработчик сообщений от Fintacharts
     fintachartsSocket.onmessage = (event) => {
       const associatedClient = this.fintachartsToClientSocket.get(fintachartsSocket);
       if (associatedClient && associatedClient.readyState === WebSocket.OPEN) {
         associatedClient.send(event.data.toString());
-        // this.logger.log('[Fintacharts WS] Relayed message from Fintacharts to client.'); // Слишком много логов для продакшена
       } else {
         this.logger.warn(`[Client WS] Tried to send message to a closed or undefined client socket. State: ${associatedClient?.readyState}`);
         if (fintachartsSocket.readyState === WebSocket.OPEN) {
-          fintachartsSocket.close(1001, 'Client disconnected'); // 1001 - Going Away
+          fintachartsSocket.close(1001, 'Client disconnected');
           this.logger.log('[Fintacharts WS] Closing Fintacharts socket because associated client is not open.');
         }
       }
     };
 
-    // Обработчик ошибок соединения с Fintacharts
-    fintachartsSocket.onerror = (errorEvent: Event) => { // Уточнил тип для errorEvent
+    fintachartsSocket.onerror = (errorEvent: Event) => {
       this.logger.error(`[Fintacharts WS] Error received from Fintacharts socket: ${errorEvent.type}. Details:`, errorEvent);
       const associatedClient = this.fintachartsToClientSocket.get(fintachartsSocket);
       if (associatedClient && associatedClient.readyState === WebSocket.OPEN) {
@@ -138,12 +125,9 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
       } else {
         this.logger.warn('[Client WS] Associated client not open to send Fintacharts error.');
       }
-      // Ошибка в Fintacharts socket должна привести к его закрытию.
-      // onclose обработает очистку.
     };
 
-    // Обработчик закрытия соединения с Fintacharts
-    fintachartsSocket.onclose = (event: CloseEvent) => { // Уточнил тип для event
+    fintachartsSocket.onclose = (event: CloseEvent) => {
       this.logger.warn(`[Fintacharts WS] Fintacharts WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}. Was clean: ${event.wasClean}`);
       const associatedClient = this.fintachartsToClientSocket.get(fintachartsSocket);
       if (associatedClient) {
@@ -154,30 +138,28 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
     };
   }
 
-  // Обработка сообщения отписки от Angular-клиента
   @SubscribeMessage('l1-unsubscription')
   handleL1Unsubscription(
     @ConnectedSocket() client: WebSocket,
     @MessageBody() data: any
   ): void {
     this.logger.log(`[Client WS] Received L1 unsubscription from client for instrumentId: ${data.instrumentId}`);
-    this.logger.log(`[Client WS] Unsubscription Data: ${JSON.stringify(data)}`); // Логируем данные отписки
+    this.logger.log(`[Client WS] Unsubscription Data: ${JSON.stringify(data)}`);
 
     const fintachartsSocket = this.clientToFintachartsSocket.get(client);
     if (fintachartsSocket && fintachartsSocket.readyState === WebSocket.OPEN) {
       const unsubscribeMessage = {
-        type: 'l1-subscription', // Fintacharts использует l1-subscription с subscribe: false для отписки
+        type: 'l1-subscription',
         id: '1',
         instrumentId: data.instrumentId,
         provider: data.provider || 'oanda',
-        subscribe: false, // <-- Отписка
+        subscribe: false,
         kinds: ['ask', 'bid', 'last']
       };
       fintachartsSocket.send(JSON.stringify(unsubscribeMessage));
       this.logger.log('[Fintacharts WS] Sent unsubscription message to Fintacharts.');
-      fintachartsSocket.close(); // Закрываем соединение с Fintacharts после отписки
+      fintachartsSocket.close();
       this.logger.log('[Fintacharts WS] Fintacharts socket closed after unsubscription.');
-      // Очищаем map, даже если socket уже был в процессе закрытия
       this.clientToFintachartsSocket.delete(client);
       this.fintachartsToClientSocket.delete(fintachartsSocket);
     } else {
